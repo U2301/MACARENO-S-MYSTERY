@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
+import webpush from 'web-push';
 import {
   Player,
   GameState,
@@ -23,7 +24,70 @@ const PORT = 3000;
 
 app.use(express.json());
 
-// Helper for broadcasting phone push notifications to room state
+// VAPID keys for Web Push Notifications (works in background & screen off)
+const vapidPublicKey =
+  process.env.VAPID_PUBLIC_KEY ||
+  'BJXMdQi6nQHrwe0I5iEzqhErY59yukISbFhqA1G_ZlkRICMfb-DA2M4c3cUbgIvx1OgYQR8dL8FLfnNQKjt_YyU';
+const vapidPrivateKey =
+  process.env.VAPID_PRIVATE_KEY || 'mVN7NmDHWwIdBPSDD1T6R9qSIGldsNODLvGiBf7jQpk';
+
+try {
+  webpush.setVapidDetails('mailto:soporte@macarenomystery.app', vapidPublicKey, vapidPrivateKey);
+  console.log('WebPush VAPID configured successfully');
+} catch (err) {
+  console.warn('VAPID setup warning:', err);
+}
+
+interface PushSubscriptionRecord {
+  roomCode: string;
+  playerId: string;
+  subscription: webpush.PushSubscription;
+}
+const pushSubscriptions = new Map<string, PushSubscriptionRecord>();
+
+// Send native Web Push to background / lock screen / phone off
+async function sendWebPushToRoom(
+  roomCode: string,
+  payload: { title: string; body: string; tag?: string; url?: string; vibrate?: number[] },
+  excludePlayerId?: string
+) {
+  const code = (roomCode || '').toUpperCase().trim();
+  const deadEndpoints: string[] = [];
+
+  for (const [endpoint, record] of pushSubscriptions.entries()) {
+    if (record.roomCode === code && record.playerId !== excludePlayerId) {
+      try {
+        await webpush.sendNotification(
+          record.subscription,
+          JSON.stringify({
+            title: payload.title,
+            body: payload.body,
+            icon: '/icon.svg',
+            badge: '/icon.svg',
+            tag: payload.tag || 'macareno-' + Date.now(),
+            vibrate: payload.vibrate || [300, 150, 300, 150, 450],
+            data: {
+              url: payload.url || `/?room=${code}`,
+              timestamp: Date.now(),
+            },
+          })
+        );
+      } catch (err: any) {
+        if (err?.statusCode === 404 || err?.statusCode === 410) {
+          deadEndpoints.push(endpoint);
+        } else {
+          console.warn(`WebPush notice for ${record.playerId}:`, err?.message || err);
+        }
+      }
+    }
+  }
+
+  for (const ep of deadEndpoints) {
+    pushSubscriptions.delete(ep);
+  }
+}
+
+// Helper for broadcasting phone push notifications to room state & native push
 function broadcastPushToRoom(
   room: RoomData,
   push: PushNotificationPayload
@@ -34,6 +98,14 @@ function broadcastPushToRoom(
   if (room.state.recentPushes.length > 25) {
     room.state.recentPushes.pop();
   }
+
+  // Trigger web push to sleeping / background phones
+  sendWebPushToRoom(room.state.roomCode, {
+    title: push.title,
+    body: push.body,
+    tag: push.type,
+    url: `/?room=${room.state.roomCode}`,
+  }).catch(() => {});
 }
 
 // Initialize GoogleGenAI client (lazy / safe)
@@ -945,6 +1017,79 @@ app.post('/api/rooms/join', (req, res) => {
     roomState: room.state,
     players: room.players,
   });
+});
+
+// API: Resume Session (Reload recovery, app switching, or returning after screen off)
+app.post('/api/rooms/resume', (req, res) => {
+  const { roomCode, playerId, pin } = req.body;
+  const code = (roomCode || '').toUpperCase().trim();
+  const room = rooms.get(code);
+
+  if (!room) {
+    return res.status(404).json({ success: false, error: 'La sala ya no existe o ha expirado.' });
+  }
+
+  const player = room.players.find((p) => p.id === playerId);
+  if (!player) {
+    return res.status(404).json({ success: false, error: 'Jugador no encontrado en la sala.' });
+  }
+
+  // If PIN is provided, verify match (or allow if matches playerId)
+  if (pin && player.pin && player.pin !== pin) {
+    return res.status(403).json({ success: false, error: 'PIN de sesión inválido.' });
+  }
+
+  return res.json({
+    success: true,
+    roomCode: code,
+    player,
+    roomState: room.state,
+    players: room.players,
+    chatMessages: room.chatMessages,
+  });
+});
+
+// API: Push Notifications (VAPID key retrieval, subscription & test)
+app.get('/api/push/vapid-public-key', (req, res) => {
+  res.json({ publicKey: vapidPublicKey });
+});
+
+app.post('/api/push/subscribe', (req, res) => {
+  const { roomCode, playerId, subscription } = req.body;
+  if (!subscription || !subscription.endpoint) {
+    return res.status(400).json({ error: 'Suscripción inválida' });
+  }
+
+  pushSubscriptions.set(subscription.endpoint, {
+    roomCode: (roomCode || '').toUpperCase().trim(),
+    playerId: playerId || 'anonymous',
+    subscription,
+  });
+
+  return res.json({ success: true });
+});
+
+app.post('/api/push/unsubscribe', (req, res) => {
+  const { endpoint } = req.body;
+  if (endpoint) {
+    pushSubscriptions.delete(endpoint);
+  }
+  return res.json({ success: true });
+});
+
+app.post('/api/push/test', async (req, res) => {
+  const { roomCode, playerId } = req.body;
+  const code = (roomCode || '').toUpperCase().trim();
+  await sendWebPushToRoom(
+    code,
+    {
+      title: '🔔 Notificación en Segundo Plano',
+      body: '¡Esta notificación llega incluso con el celular apagado o fuera de la pestaña!',
+      tag: 'test',
+    },
+    undefined
+  );
+  return res.json({ success: true });
 });
 
 // API: Get Room State (polling)
@@ -2661,6 +2806,19 @@ app.post('/api/rooms/:roomCode/reset', (req, res) => {
     players: room.players,
     chatMessages: room.chatMessages,
   });
+});
+
+// PWA & Service Worker routes (served with proper MIME types and headers)
+app.get('/sw.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Service-Worker-Allowed', '/');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.sendFile(path.join(process.cwd(), 'public', 'sw.js'));
+});
+
+app.get('/manifest.json', (req, res) => {
+  res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+  res.sendFile(path.join(process.cwd(), 'public', 'manifest.json'));
 });
 
 // Vite middleware & Static serving

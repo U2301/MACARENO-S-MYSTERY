@@ -10,7 +10,8 @@ import {
   CheckCircle2,
   AlertCircle,
   Radio,
-  Sparkles
+  Sparkles,
+  Sun
 } from 'lucide-react';
 import { notificationManager } from '../utils/notifications';
 
@@ -18,6 +19,8 @@ interface NotificationSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   isHost?: boolean;
+  roomCode?: string;
+  currentPlayerId?: string;
   onBroadcastPush?: (title: string, body: string) => Promise<boolean>;
 }
 
@@ -25,12 +28,16 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
   isOpen,
   onClose,
   isHost,
+  roomCode,
+  currentPlayerId,
   onBroadcastPush,
 }) => {
   const [permission, setPermission] = useState<string>('default');
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [vibrateEnabled, setVibrateEnabled] = useState<boolean>(true);
+  const [wakeLockEnabled, setWakeLockEnabled] = useState<boolean>(false);
   const [tested, setTested] = useState<boolean>(false);
+  const [testingBackground, setTestingBackground] = useState<boolean>(false);
 
   // Host broadcast state
   const [broadcastTitle, setBroadcastTitle] = useState('');
@@ -43,17 +50,19 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
       setPermission(notificationManager.getPermissionStatus());
       setSoundEnabled(notificationManager.isSoundEnabled());
       setVibrateEnabled(notificationManager.isVibrationEnabled());
+      setWakeLockEnabled(notificationManager.isWakeLockEnabled());
     }
   }, [isOpen]);
 
   if (!isOpen) return null;
 
   const handleRequestPermission = async () => {
-    const granted = await notificationManager.requestPermission();
+    const granted = await notificationManager.requestPermission(roomCode, currentPlayerId);
     setPermission(granted ? 'granted' : 'denied');
     if (granted) {
       notificationManager.testNotification();
       setTested(true);
+      setTimeout(() => setTested(false), 3000);
     }
   };
 
@@ -69,10 +78,32 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
     notificationManager.setVibrationEnabled(next);
   };
 
+  const handleToggleWakeLock = () => {
+    const next = !wakeLockEnabled;
+    setWakeLockEnabled(next);
+    notificationManager.setWakeLockEnabled(next);
+  };
+
   const handleTestNotification = () => {
     notificationManager.testNotification();
     setTested(true);
     setTimeout(() => setTested(false), 3000);
+  };
+
+  const handleTestBackgroundPush = async () => {
+    if (!roomCode) return;
+    setTestingBackground(true);
+    try {
+      await fetch('/api/push/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roomCode, playerId: currentPlayerId }),
+      });
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setTimeout(() => setTestingBackground(false), 4000);
+    }
   };
 
   const handleSendBroadcast = async () => {
@@ -142,10 +173,10 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
           </div>
 
           <p className="text-[11px] text-neutral-400 leading-relaxed">
-            Permite que tu celular vibre y te avise cuando haya una baja, cuando empiece la noche o cuando gire la ruleta de Macareno.
+            Permite que tu celular vibre y te avise incluso si sales de la app o bloqueas la pantalla cuando haya asesinatos, alertas o comience la noche.
           </p>
 
-          {permission !== 'granted' && (
+          {permission !== 'granted' ? (
             <button
               onClick={handleRequestPermission}
               className="w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/50 transition active:scale-95"
@@ -153,54 +184,77 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
               <Bell className="w-4 h-4" />
               Permitir Notificaciones en este Teléfono
             </button>
+          ) : (
+            <div className="flex items-center gap-1.5 text-[11px] text-emerald-400 font-semibold">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <span>Teléfono vinculado para recibir notificaciones en segundo plano.</span>
+            </div>
           )}
         </div>
 
         {/* Device Toggles */}
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-2">
           <button
             onClick={handleToggleVibrate}
-            className={`p-3 rounded-2xl border flex items-center justify-between transition ${
+            className={`p-2.5 rounded-2xl border flex flex-col items-center justify-center gap-1 transition text-center ${
               vibrateEnabled
                 ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-300'
                 : 'bg-neutral-950 border-neutral-800 text-neutral-500'
             }`}
           >
-            <div className="flex items-center gap-2">
-              <Vibrate className="w-4 h-4" />
-              <span className="text-xs font-bold">Vibración</span>
-            </div>
-            <span className="text-[10px] font-mono font-bold">
-              {vibrateEnabled ? 'SÍ' : 'NO'}
-            </span>
+            <Vibrate className="w-4 h-4" />
+            <span className="text-[11px] font-bold">Vibración</span>
+            <span className="text-[9px] font-mono font-bold">{vibrateEnabled ? 'SÍ' : 'NO'}</span>
           </button>
 
           <button
             onClick={handleToggleSound}
-            className={`p-3 rounded-2xl border flex items-center justify-between transition ${
+            className={`p-2.5 rounded-2xl border flex flex-col items-center justify-center gap-1 transition text-center ${
               soundEnabled
                 ? 'bg-sky-950/30 border-sky-500/40 text-sky-300'
                 : 'bg-neutral-950 border-neutral-800 text-neutral-500'
             }`}
           >
-            <div className="flex items-center gap-2">
-              {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-              <span className="text-xs font-bold">Sonidos</span>
-            </div>
-            <span className="text-[10px] font-mono font-bold">
-              {soundEnabled ? 'SÍ' : 'NO'}
-            </span>
+            {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+            <span className="text-[11px] font-bold">Sonidos</span>
+            <span className="text-[9px] font-mono font-bold">{soundEnabled ? 'SÍ' : 'NO'}</span>
+          </button>
+
+          <button
+            onClick={handleToggleWakeLock}
+            className={`p-2.5 rounded-2xl border flex flex-col items-center justify-center gap-1 transition text-center ${
+              wakeLockEnabled
+                ? 'bg-amber-950/30 border-amber-500/40 text-amber-300'
+                : 'bg-neutral-950 border-neutral-800 text-neutral-500'
+            }`}
+            title="Evita que la pantalla se apague sola durante la partida"
+          >
+            <Sun className="w-4 h-4" />
+            <span className="text-[11px] font-bold">Pantalla ON</span>
+            <span className="text-[9px] font-mono font-bold">{wakeLockEnabled ? 'ACTIVA' : 'AUTO'}</span>
           </button>
         </div>
 
-        {/* Test Trigger Button */}
-        <button
-          onClick={handleTestNotification}
-          className="w-full py-2 px-3 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-semibold flex items-center justify-center gap-2 transition"
-        >
-          <Smartphone className="w-3.5 h-3.5 text-amber-400" />
-          <span>{tested ? '¡Vibrando y sonando! ✨' : 'Probar Notificación y Vibración'}</span>
-        </button>
+        {/* Test Trigger Buttons */}
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={handleTestNotification}
+            className="py-2.5 px-3 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition"
+          >
+            <Smartphone className="w-3.5 h-3.5 text-amber-400" />
+            <span>{tested ? '¡Vibrando! ✨' : 'Prueba Inmediata'}</span>
+          </button>
+
+          <button
+            onClick={handleTestBackgroundPush}
+            disabled={testingBackground || permission !== 'granted'}
+            className="py-2.5 px-3 rounded-xl bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 text-neutral-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition"
+            title="Prueba una notificación push del servidor (puedes bloquear la pantalla después de oprimir)"
+          >
+            <Bell className="w-3.5 h-3.5 text-emerald-400" />
+            <span>{testingBackground ? '¡Enviada! Bloquea...' : 'Prueba Push (Fondo)'}</span>
+          </button>
+        </div>
 
         {/* HOST BROADCASTER SECTION */}
         {isHost && onBroadcastPush && (

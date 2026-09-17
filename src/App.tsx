@@ -80,6 +80,7 @@ export default function App() {
   const [joinErrorMessage, setJoinErrorMessage] = useState<string | null>(null);
   const [activeMobileTab, setActiveMobileTab] = useState<'role' | 'missions' | 'shop' | 'chat'>('role');
   const [dismissedEndGame, setDismissedEndGame] = useState(false);
+  const [isResuming, setIsResuming] = useState<boolean>(false);
 
   const prevPhaseRef = useRef<GamePhase | null>(null);
   const prevEmergencyRef = useRef<boolean>(false);
@@ -89,6 +90,104 @@ export default function App() {
   useEffect(() => {
     setNotificationPermission(notificationManager.getPermissionStatus());
   }, [isNotificationModalOpen]);
+
+  // 0. Auto-resume saved session from localStorage on reload or app open
+  useEffect(() => {
+    const saved = localStorage.getItem('macareno_session');
+    if (saved && !currentRoomCode) {
+      try {
+        const { roomCode, playerId, pin } = JSON.parse(saved);
+        if (roomCode && playerId) {
+          setIsResuming(true);
+          fetch('/api/rooms/resume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ roomCode, playerId, pin }),
+          })
+            .then((res) => res.json())
+            .then((data) => {
+              if (data.success && data.player && data.roomState) {
+                setCurrentRoomCode(data.roomCode);
+                setCurrentPlayer(data.player);
+                setGameState(data.roomState);
+                setPlayers(data.players);
+                if (data.chatMessages) setChatMessages(data.chatMessages);
+                notificationManager.syncPushSubscription(data.roomCode, data.player.id);
+              } else {
+                localStorage.removeItem('macareno_session');
+              }
+            })
+            .catch((err) => {
+              console.error('Resume session error:', err);
+            })
+            .finally(() => {
+              setIsResuming(false);
+            });
+        }
+      } catch (e) {
+        localStorage.removeItem('macareno_session');
+      }
+    }
+  }, []);
+
+  // Sync session to localStorage whenever player or roomCode updates
+  useEffect(() => {
+    if (currentRoomCode && currentPlayer) {
+      localStorage.setItem(
+        'macareno_session',
+        JSON.stringify({
+          roomCode: currentRoomCode,
+          playerId: currentPlayer.id,
+          pin: currentPlayer.pin,
+          updatedAt: Date.now(),
+        })
+      );
+      notificationManager.syncPushSubscription(currentRoomCode, currentPlayer.id);
+    }
+  }, [currentRoomCode, currentPlayer?.id, currentPlayer?.pin]);
+
+  // Fast re-sync on visibility change (switching tabs or turning screen back on)
+  useEffect(() => {
+    const handleReactivate = () => {
+      if (document.visibilityState === 'visible' && currentRoomCode) {
+        fetch(`/api/rooms/${currentRoomCode}`)
+          .then((res) => res.json())
+          .then((data) => {
+            if (data && data.roomState) {
+              setGameState(data.roomState);
+              setPlayers(data.players);
+              setChatMessages(data.chatMessages);
+              if (currentPlayer) {
+                const me = data.players.find((p: Player) => p.id === currentPlayer.id);
+                if (me) setCurrentPlayer(me);
+              }
+            }
+          })
+          .catch(() => {});
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleReactivate);
+    window.addEventListener('focus', handleReactivate);
+
+    let swMsgHandler: ((e: MessageEvent) => void) | null = null;
+    if ('serviceWorker' in navigator) {
+      swMsgHandler = (event: MessageEvent) => {
+        if (event.data?.type === 'NOTIFICATION_CLICKED') {
+          handleReactivate();
+        }
+      };
+      navigator.serviceWorker.addEventListener('message', swMsgHandler);
+    }
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleReactivate);
+      window.removeEventListener('focus', handleReactivate);
+      if (swMsgHandler && 'serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', swMsgHandler);
+      }
+    };
+  }, [currentRoomCode, currentPlayer?.id]);
 
   // 1. Polling interval to sync room state with server
   useEffect(() => {
@@ -541,6 +640,34 @@ export default function App() {
     return { success: false, message: res.error || 'Error al transferir.' };
   };
 
+  const handleLeaveGame = () => {
+    if (window.confirm('¿Deseas salir de la sala de juego?')) {
+      localStorage.removeItem('macareno_session');
+      setCurrentRoomCode(null);
+      setCurrentPlayer(null);
+      setGameState(null);
+      setPlayers([]);
+      setChatMessages([]);
+    }
+  };
+
+  // If restoring saved session -> show smooth reconnecting screen
+  if (isResuming) {
+    return (
+      <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col items-center justify-center p-4">
+        <div className="flex flex-col items-center gap-4 text-center max-w-xs">
+          <div className="w-16 h-16 rounded-3xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center animate-pulse">
+            <Flame className="w-8 h-8 text-rose-400" />
+          </div>
+          <div>
+            <h3 className="text-base font-bold text-white">Reconectando a la Partida...</h3>
+            <p className="text-xs text-neutral-400 mt-1">Recuperando tu personaje y estado del juego</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // If not joined to any room yet -> Show JoinScreen
   if (!currentRoomCode || !currentPlayer || !gameState) {
     return (
@@ -564,9 +691,12 @@ export default function App() {
           currentPlayer={currentPlayer}
           onStartGame={handleStartGame}
           onLeaveRoom={() => {
+            localStorage.removeItem('macareno_session');
             setCurrentRoomCode(null);
             setCurrentPlayer(null);
             setGameState(null);
+            setPlayers([]);
+            setChatMessages([]);
           }}
         />
       </div>
@@ -689,6 +819,8 @@ export default function App() {
         isOpen={isNotificationModalOpen}
         onClose={() => setIsNotificationModalOpen(false)}
         isHost={currentPlayer.isHost}
+        roomCode={currentRoomCode || undefined}
+        currentPlayerId={currentPlayer?.id}
         onBroadcastPush={handleBroadcastPush}
       />
 
@@ -803,6 +935,16 @@ export default function App() {
               {notificationPermission !== 'granted' && (
                 <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-amber-400 ring-2 ring-neutral-900 animate-pulse" />
               )}
+            </button>
+
+            {/* Leave Room Button */}
+            <button
+              id="header-leave-room-btn"
+              onClick={handleLeaveGame}
+              className="p-2 rounded-xl bg-neutral-800/80 border border-neutral-700 text-neutral-400 hover:text-rose-400 hover:border-rose-500/40 transition"
+              title="Salir de la Sala"
+            >
+              <LogOut className="w-4 h-4" />
             </button>
           </div>
         </div>

@@ -1,0 +1,26 @@
+{
+  "id": "/",
+  "name": "Remix Remix Macareno's Mystery",
+  "short_name": "Macareno",
+  "description": "Juego presencial de deducción social y misterio en vivo en la fiesta de Macareno con Árbitro IA.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#0a0a0a",
+  "background_color": "#0a0a0a",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

@@ -43,7 +43,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   );
 
   const handleRequestPushPermission = async () => {
-    const granted = await notificationManager.requestPermission();
+    const granted = await notificationManager.requestPermission(
+      roomState.roomCode,
+      currentPlayer.id
+    );
     setNotificationPermission(granted ? 'granted' : 'denied');
     if (granted) {
       notificationManager.testNotification();
