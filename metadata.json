@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix Macareno\u0027s Mystery",
+  "description": "Juego presencial de deducción social y misterio en vivo en la fiesta de Macareno con Árbitro IA.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
